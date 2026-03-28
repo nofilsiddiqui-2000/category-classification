@@ -1,0 +1,8 @@
+llm_trigger_confidence: 0.62
+model_seed_min_confidence: 0.58
+rule_final_confidence: 0.80
+llm_final_confidence: 0.68
+model_final_confidence: 0.57
+random_state: 42
+llm_batch_size: 30
+llm_model: gpt-4.1-mini
