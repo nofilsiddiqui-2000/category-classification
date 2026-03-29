@@ -11,10 +11,12 @@ import joblib
 import pandas as pd
 import yaml
 
+from .evaluation import evaluate_predictions
 from .io_utils import infer_category_column, read_table, write_table
 from .llm_classifier import classify_categories_with_llm
 from .modeling import predict_with_confidence, train_text_classifier
 from .rule_engine import RuleClassifier
+from .semantic_scorer import PrototypeSemanticScorer
 
 
 def _to_key(value: Any) -> str:
@@ -25,9 +27,12 @@ def _to_key(value: Any) -> str:
 class PipelineConfig:
     llm_trigger_confidence: float = 0.62
     model_seed_min_confidence: float = 0.58
+    semantic_seed_min_confidence: float = 0.56
+    semantic_override_margin: float = 0.08
     rule_final_confidence: float = 0.8
     llm_final_confidence: float = 0.68
     model_final_confidence: float = 0.57
+    semantic_final_confidence: float = 0.6
     random_state: int = 42
     llm_batch_size: int = 30
     llm_model: str = "gpt-4.1-mini"
@@ -55,6 +60,9 @@ class PipelineSummary:
     source_counts: dict[str, int]
     label_counts: dict[str, int]
     model_metrics: dict[str, float]
+    eval_metrics: dict[str, Any]
+    target_accuracy: float | None
+    target_met: bool | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,6 +78,9 @@ def run_pipeline(
     llm_model: str | None = None,
     llm_batch_size: int | None = None,
     llm_api_key: str | None = None,
+    label_column: str | None = None,
+    target_accuracy: float | None = None,
+    enforce_target: bool = False,
 ) -> PipelineSummary:
     cfg = PipelineConfig.from_yaml(config_path)
     if llm_model:
@@ -87,6 +98,22 @@ def run_pipeline(
     working_df = df.copy()
     working_df["_category_key"] = working_df[category_col].map(_to_key)
 
+    output_cols = [
+        "super_category",
+        "super_category_confidence",
+        "super_category_source",
+    ]
+    effective_label_col = label_column
+    if label_column and label_column in output_cols and label_column in working_df.columns:
+        backup_col = "__true_label_backup__"
+        working_df[backup_col] = working_df[label_column]
+        effective_label_col = backup_col
+
+    # Avoid merge suffix collisions when input already has prediction columns.
+    drop_collision_cols = [c for c in output_cols if c in working_df.columns]
+    if drop_collision_cols:
+        working_df = working_df.drop(columns=drop_collision_cols)
+
     unique_categories = sorted(
         [x for x in working_df["_category_key"].dropna().unique().tolist() if x]
     )
@@ -97,6 +124,18 @@ def run_pipeline(
     unique_df["rule_label"] = rule_results.map(lambda x: x.label)
     unique_df["rule_confidence"] = rule_results.map(lambda x: x.confidence)
     unique_df["rule_terms"] = rule_results.map(lambda x: x.matched_terms)
+
+    semantic_model = PrototypeSemanticScorer()
+    semantic_results = semantic_model.predict_many(unique_df["_category_key"].tolist())
+    unique_df["semantic_label"] = unique_df["_category_key"].map(
+        lambda x: semantic_results[x].label
+    )
+    unique_df["semantic_confidence"] = unique_df["_category_key"].map(
+        lambda x: semantic_results[x].confidence
+    )
+    unique_df["semantic_similarity"] = unique_df["_category_key"].map(
+        lambda x: semantic_results[x].max_similarity
+    )
 
     unique_df["llm_label"] = pd.Series([pd.NA] * len(unique_df), dtype="object")
     unique_df["llm_confidence"] = pd.Series([float("nan")] * len(unique_df), dtype="float")
@@ -130,6 +169,37 @@ def run_pipeline(
     # Seed labels for self-training.
     unique_df["seed_label"] = unique_df["rule_label"]
     unique_df["seed_confidence"] = unique_df["rule_confidence"]
+
+    # If semantic and rule agree, boost confidence.
+    agree_mask = (
+        (unique_df["semantic_label"] == unique_df["rule_label"])
+        & (unique_df["semantic_label"] != "Other")
+    )
+    if agree_mask.any():
+        unique_df.loc[agree_mask, "seed_confidence"] = unique_df.loc[
+            agree_mask, ["rule_confidence", "semantic_confidence"]
+        ].max(axis=1)
+
+    # Semantic override for rule misses/weak rule predictions.
+    semantic_override_mask = (
+        (unique_df["semantic_label"] != "Other")
+        & (
+            (unique_df["rule_label"] == "Other")
+            | (
+                unique_df["semantic_confidence"]
+                >= unique_df["rule_confidence"] + cfg.semantic_override_margin
+            )
+        )
+        & (unique_df["semantic_confidence"] >= cfg.semantic_seed_min_confidence)
+    )
+    if semantic_override_mask.any():
+        unique_df.loc[semantic_override_mask, "seed_label"] = unique_df.loc[
+            semantic_override_mask, "semantic_label"
+        ]
+        unique_df.loc[semantic_override_mask, "seed_confidence"] = unique_df.loc[
+            semantic_override_mask, "semantic_confidence"
+        ]
+
     llm_available_mask = unique_df["llm_label"].notna()
     if llm_available_mask.any():
         unique_df.loc[llm_available_mask, "seed_label"] = unique_df.loc[
@@ -172,6 +242,8 @@ def run_pipeline(
         llm_conf = getattr(row, "llm_confidence")
         rule_label = getattr(row, "rule_label")
         rule_conf = float(getattr(row, "rule_confidence"))
+        semantic_label = getattr(row, "semantic_label")
+        semantic_conf = float(getattr(row, "semantic_confidence"))
         ml_label = getattr(row, "ml_label")
         ml_conf = getattr(row, "ml_confidence")
 
@@ -185,6 +257,27 @@ def run_pipeline(
             final_labels.append("Other")
             final_confidences.append(rule_conf)
             final_sources.append("rule")
+            continue
+
+        if (
+            semantic_label == rule_label
+            and semantic_label != "Other"
+            and max(semantic_conf, rule_conf)
+            >= min(cfg.rule_final_confidence, cfg.semantic_final_confidence)
+        ):
+            final_labels.append(str(semantic_label))
+            final_confidences.append(max(semantic_conf, rule_conf))
+            final_sources.append("rule_semantic")
+            continue
+
+        if (
+            semantic_label != "Other"
+            and semantic_conf >= cfg.semantic_final_confidence
+            and semantic_conf >= rule_conf - 0.05
+        ):
+            final_labels.append(str(semantic_label))
+            final_confidences.append(semantic_conf)
+            final_sources.append("semantic")
             continue
 
         if rule_label != "Other" and rule_conf >= cfg.rule_final_confidence:
@@ -238,6 +331,29 @@ def run_pipeline(
             json.dumps(model_metrics, indent=2), encoding="utf-8"
         )
 
+    eval_metrics: dict[str, Any] = {}
+    target_met: bool | None = None
+    if effective_label_col:
+        eval_result = evaluate_predictions(
+            result_df, true_label_col=effective_label_col, pred_label_col="super_category"
+        )
+        eval_metrics = {
+            "accuracy": eval_result.accuracy,
+            "f1_macro": eval_result.f1_macro,
+            "samples": eval_result.samples,
+            "per_label_support": eval_result.per_label_support,
+        }
+        (artifacts_dir / "eval_metrics.json").write_text(
+            json.dumps(eval_metrics, indent=2), encoding="utf-8"
+        )
+        if target_accuracy is not None:
+            target_met = eval_result.accuracy >= float(target_accuracy)
+            if enforce_target and not target_met:
+                raise RuntimeError(
+                    "Target accuracy not met: "
+                    f"{eval_result.accuracy:.4f} < {float(target_accuracy):.4f}"
+                )
+
     summary = PipelineSummary(
         input_path=str(input_path),
         output_path=str(output_path),
@@ -250,6 +366,9 @@ def run_pipeline(
         source_counts=result_df["super_category_source"].value_counts().to_dict(),
         label_counts=result_df["super_category"].value_counts().to_dict(),
         model_metrics=model_metrics,
+        eval_metrics=eval_metrics,
+        target_accuracy=target_accuracy,
+        target_met=target_met,
     )
     (artifacts_dir / "run_summary.json").write_text(
         json.dumps(summary.to_dict(), indent=2), encoding="utf-8"

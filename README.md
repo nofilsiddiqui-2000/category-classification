@@ -1,76 +1,61 @@
-# Category ML - Task 1 Pipeline (Category Classification)
+# Category Classification (Task 1)
 
-This repository now contains a complete end-to-end pipeline for **Task 1: classify category names into super categories**:
+This is the simplest way to run the project.
 
-- `Food`
-- `Drinks`
-- `Home Care`
-- `Personal Care`
-- `Other` (fallback when none of the four apply)
+## Windows (Git Bash) - Use These Exact Commands
 
-## What the pipeline does
+Run from `Category_ML` folder:
 
-1. Reads category file (`.csv` or `.xlsx`).
-2. Detects the category text column (or uses `--category-column`).
-3. Runs a rule-based classifier for initial labels.
-4. Optionally classifies ambiguous cases using OpenAI (`--enable-llm`).
-5. Trains a text model on pseudo-labels (self-training).
-6. Produces final category labels with confidence and source.
-7. Saves:
-   - output file with added columns
-   - unique-category prediction table
-   - model/metrics/config artifacts
+```bash
+cd /d/Projects/Category_ML
+/c/Windows/py.exe -3.12 -m venv .venv
+.venv/Scripts/python.exe -m pip install --upgrade pip
+.venv/Scripts/python.exe -m pip install -r requirements.txt
+.venv/Scripts/python.exe scripts/run_task1_pipeline.py --input Guide/Category_Names.xlsx --output outputs/Category_Names_classified.xlsx --config configs/task1_default.yaml
+```
 
-## Added output columns
+Output file:
+
+- `outputs/Category_Names_classified.xlsx`
+
+## Windows (PowerShell) - Same Flow
+
+```powershell
+cd D:\Projects\Category_ML
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe scripts\run_task1_pipeline.py --input Guide\Category_Names.xlsx --output outputs\Category_Names_classified.xlsx --config configs\task1_default.yaml
+```
+
+## Accuracy Check (Only If You Have True Labels)
+
+Example command:
+
+```bash
+.venv/Scripts/python.exe scripts/run_task1_pipeline.py --input data/labeled_categories.xlsx --output outputs/labeled_categories_pred.xlsx --config configs/task1_default.yaml --label-column true_super_category --target-accuracy 0.90 --enforce-target
+```
+
+If accuracy is below `0.90`, the command exits with error.
+
+## Quick Troubleshooting
+
+If you see `ModuleNotFoundError: No module named 'joblib'`:
+
+```bash
+.venv/Scripts/python.exe -m pip install -r requirements.txt
+```
+
+If `.venv` is broken, recreate it:
+
+```bash
+rm -rf .venv
+/c/Windows/py.exe -3.12 -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements.txt
+```
+
+## What Gets Added To Output
 
 - `super_category`
 - `super_category_confidence`
 - `super_category_source`
-
-## Setup
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-## Run
-
-```bash
-.venv/bin/python scripts/run_task1_pipeline.py \
-  --input Guide/Category_Names.xlsx \
-  --output outputs/Category_Names_classified.xlsx \
-  --config configs/task1_default.yaml
-```
-
-### Optional: enable LLM for ambiguous categories
-
-```bash
-export OPENAI_API_KEY="YOUR_KEY"
-.venv/bin/python scripts/run_task1_pipeline.py \
-  --input Guide/Category_Names.xlsx \
-  --output outputs/Category_Names_classified_llm.xlsx \
-  --enable-llm \
-  --llm-model gpt-4.1-mini
-```
-
-Or pass key directly:
-
-```bash
-.venv/bin/python scripts/run_task1_pipeline.py \
-  --input Guide/Category_Names.xlsx \
-  --output outputs/Category_Names_classified_llm.xlsx \
-  --enable-llm \
-  --llm-model gpt-4.1-mini \
-  --api-key "YOUR_KEY"
-```
-
-## Artifacts
-
-Default artifact directory: `artifacts/task1/`
-
-- `unique_category_predictions.csv`
-- `run_summary.json`
-- `pipeline_config.json`
-- `model_metrics.json` (if ML model trained)
-- `task1_text_classifier.joblib` (if ML model trained)

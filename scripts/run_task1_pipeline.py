@@ -69,6 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional YAML config path for thresholds and random seed.",
     )
+    parser.add_argument(
+        "--label-column",
+        default=None,
+        help="Ground-truth label column for evaluation (optional).",
+    )
+    parser.add_argument(
+        "--target-accuracy",
+        type=float,
+        default=None,
+        help="Target minimum accuracy (e.g., 0.90) when --label-column is provided.",
+    )
+    parser.add_argument(
+        "--enforce-target",
+        action="store_true",
+        help="Fail with non-zero exit if target accuracy is not met.",
+    )
     return parser
 
 
@@ -92,6 +108,9 @@ def main() -> int:
         llm_model=args.llm_model,
         llm_batch_size=args.llm_batch_size,
         llm_api_key=args.api_key,
+        label_column=args.label_column,
+        target_accuracy=args.target_accuracy,
+        enforce_target=args.enforce_target,
     )
 
     print("Task 1 pipeline completed.")
@@ -104,6 +123,13 @@ def main() -> int:
     print("Source counts:", json.dumps(summary.source_counts, indent=2))
     if summary.model_metrics:
         print("Model metrics:", json.dumps(summary.model_metrics, indent=2))
+    if summary.eval_metrics:
+        print("Evaluation metrics:", json.dumps(summary.eval_metrics, indent=2))
+        if summary.target_accuracy is not None:
+            print(
+                f"Target accuracy ({summary.target_accuracy:.4f}) met: "
+                f"{summary.target_met}"
+            )
     return 0
 
 

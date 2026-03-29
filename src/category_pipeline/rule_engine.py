@@ -130,6 +130,7 @@ RULE_KEYWORDS = {
         "shampoo",
         "conditioner",
         "hair",
+        "kit",
         "face care",
         "face",
         "skin care",
@@ -148,6 +149,11 @@ NEGATIVE_TERMS = {
     "MISC",
     "OTHERS",
 }
+
+STRONG_OTHER_PATTERNS = [
+    re.compile(r"(?<![a-z0-9])pet(?:s)?(?![a-z0-9])"),
+    re.compile(r"(?<![a-z0-9])animal(?:s)?(?![a-z0-9])"),
+]
 
 
 class RuleClassifier:
@@ -186,6 +192,15 @@ class RuleClassifier:
             )
 
         text = _normalize_text(raw)
+        for pattern in STRONG_OTHER_PATTERNS:
+            if pattern.search(text):
+                return RuleResult(
+                    label="Other",
+                    confidence=0.93,
+                    matched_terms="strong_other_pattern",
+                    scores={k: 0.0 for k in SUPER_CATEGORIES},
+                )
+
         scores = {k: 0.0 for k in SUPER_CATEGORIES}
         hits: list[str] = []
 
